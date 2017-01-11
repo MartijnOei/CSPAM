@@ -9,4 +9,4 @@ CSPAM has been developed initially by Kasper van Dam M.Sc. (GitHub: kvandam). Th
 Martijn Oei B.Sc. (GitHub: MartijnOei) is currently continuing the CSPAM development, alongside Huib Intema Ph.D. and Francesco de Gasperin Ph.D. at Leiden Observatory, The Netherlands.
 
 
-[i]Last edit: January 11, 2017 - Martijn Oei[/i]
+Last edit: January 11, 2017 - Martijn Oei
