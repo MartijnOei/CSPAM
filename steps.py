@@ -5,6 +5,7 @@ import logging
 import numpy as np
 import aplpy
 import matplotlib.cm
+from matplotlib import pyplot
 from astropy.io import fits
 
 # CSPAM Modules
@@ -14,12 +15,13 @@ from lib import utils
 from lib import skymodel
 from lib import peel
 
-# The following casanova imports are somewhat ugly but importing this way
+# The following CASANOVA imports are somewhat ugly but importing this way
 # allows for CASA-style usage of the toolkits and tasks.
 
 # CASA Toolkits
 import casac
 cl = casac.casac.componentlist()
+tb = casac.casac.table()
 
 # CASA Tasks
 from casat import plotants
@@ -71,54 +73,290 @@ from casat import exportfits
 exportfits = exportfits.exportfits
 
 
-sou_res = ['1arcsec']
+sou_res = ["1arcsec"]
 sou_size = [5000]
 expnoise = 1.e-6
-rob=0.5
+rob = 0.5
 
 
 def plots(mset):
-    """
-    Create some plots and save them in the plot directory.
-    Also create a file with the summary of the measurement set and
-    save it in the plot directory.
-    """
-    logging.info("### CREATING PLOTS")
-    plotants(vis=mset.file_path, figfile=mset.dir_plot+'/plotants.png')
-    plotms(vis=mset.file_path, xaxis='time', yaxis='elevation', showgui=False,
-           selectdata=True, antenna='0&1;2&3',spw='0:31', coloraxis='field', 
-           plotfile=mset.dir_plot+'/el_vs_time.png', overwrite=True)
-    listobs(vis=mset.file_path, verbose=True,
-            listfile=mset.dir_plot+'/listobs.txt', overwrite=True)
+    '''
+    This pipeline step generates a text file with a summary of the MS contents,
+    and several plots to provide the user with graphical insight into the MS. Current plots:
+    1. Distribution of scans over fields
+    2. Distribution of observing time over fields
+    3. Antenna configuration
+    4. Antenna configuration (with antenna names and IDs)
+    5. Elevation versus time graph of observed fields
+    
+    All output is saved in the plot directory (created in the initialization method of MSObj (see TableObjects.py)).
+    '''
+    logging.info("### CREATING INITIAL DIAGNOSTIC OUTPUT")
+    
+    # Create the MS contents summary text file.
+    listobs(vis = mset.file_path, verbose = True, listfile = mset.dir_plot + "/listobs.txt", overwrite = True)
+    print ("Saved observation summary text file to: " + mset.dir_plot + "/listobs.txt")
+    
+    
+    # Using the listobs.txt file, find the antennas whose data are not completely flagged.
+    # The baseline formed by the first two of these antennas can then be used to generate the elevation versus time graph.
+    # Why would we use only one baseline? Because that's quicker.
+    fileListObs = open(mset.dir_plot + "/listobs.txt", 'r')
+    
+    lineListObs = fileListObs.readline()
+    while (lineListObs[: 10] != "Antennas: "):
+        lineListObs = fileListObs.readline()
+    
+    # The 'while'-loop has now ended. We're now on the line with 'Antennas: X:'. We want to read 'X'.
+    antennasUsedNumber = int(lineListObs[10 : 10 + lineListObs[10 : ].find(':')])
+    
+    # Skip two lines.
+    for i in range(2):
+        fileListObs.readline()
+    
+    antennasUsedIDs = []
+    for i in range(antennasUsedNumber):
+        lineListObs = fileListObs.readline()
+        antennasUsedIDs.append(int(lineListObs[2 : 2 + lineListObs[2 : ].find(' ')]))
+    fileListObs.close()
+    
+    
+    # Using the listobs.txt file, extract general information about the observing run to plot.
+    fileListObs = open(mset.dir_plot + "/listobs.txt", 'r')
+    
+    # Extract all text and store it in a string.
+    textListObs = fileListObs.read()
+    
+    # Cut out the piece of the string that contains the table with scan data.
+    scanDataString = textListObs[textListObs.find("ScanIntent\n") + len("ScanIntent\n") + 1 : textListObs.find("(nRows = Total number of rows per scan)")]\
+    
+    # Initialize lists that will contain the scan data.
+    timeStartStrings = []
+    timeEndStrings = []
+    scanIDs = []
+    fieldNames = []
+    
+    # For each line sequentially, store the data in the lists.
+    while ("\n" in scanDataString):        
+        line = scanDataString[ : scanDataString.find("\n")]
+        #print (line)
+        # For the next iteration, take the old 'scanDataString', but omit the current line.
+        scanDataString = scanDataString[scanDataString.find("\n") + 2 : ]
+        
+        # Add the starting time to the appropriate list.
+        # First, remove a possible date and any whitespace before the scan's starting time.
+        line = line[line.find(':') - 2 : ]
+        timeStartString = line[ : line.find('-') - 1]
+        timeStartStrings.append(timeStartString)
+        
+        # Add the ending time to the appropriate list.
+        line = line[line.find('-') + 2 : ]
+        timeEndString = line[ : line.find(' ')]
+        timeEndStrings.append(timeEndString)
+        
+        # Add the scan ID to the appropriate list.
+        # First, remove any spaces before the scan ID.
+        line = line[line.find(' ') + 1 : ]
+        while(line[0] == ' '):
+            line = line[1 : ]
+        scanID = line[ : line.find(' ')]
+        scanIDs.append(scanID)
+        
+        # Add the field name to the appropriate list.
+        # First, 'navigate' to the start of the field name, dismissing all characters that come before it.
+        line = line[line.find(' ') + 1 : ]
+        while(line[0] == ' '):
+            line = line[1 : ]
+        line = line[line.find(' ') + 1 : ]
+        fieldName = line[ : line.find(' ')]
+        fieldNames.append(fieldName)
+    
+    '''
+    print (timeStartStrings)
+    print (timeEndStrings)
+    print (scanIDs)
+    print (fieldNames)
+    '''
+    
+    numberOfScans = len(scanIDs) # 'scanIDs' is not used hereafter.
+    numberOfFields = len(set(fieldNames))
+    
+    # Generate a list of scan durations from time strings.
+    scanDurations = [] # in seconds
+    for i in range(numberOfScans):
+	   timeStart = datetime.datetime.strptime(timeStartStrings[i][ : -2], "%H:%M:%S") # We remove the decimal part of the seconds.
+	   timeEnd = datetime.datetime.strptime(timeEndStrings[i][ : -2], "%H:%M:%S") # We remove the decimal part of the seconds.
+	   if (timeEnd > timeStart): # This is the ordinary situation
+	       scanDurations.append((timeEnd - timeStart).total_seconds())
+	   else: # The case in which the midnight border was crossed during the scan
+	       scanDurations.append((timeEnd + datetime.timedelta(hours = 24) - timeStart).total_seconds())
+    
+    '''
+    print (scanDurations)
+    '''    
+    
+    # Generate 3 lists, to be used in the upcoming bar plots. These are:
+    histFieldNames = [] # All field names with duplicates removed
+    histScanNumbers = [] # The number of scans corresponding to that field
+    histTotalTimes = [] # The total observation length corresponding to that field
+    
+    for i in range(numberOfScans):
+	   if (not fieldNames[i] in histFieldNames):
+		  histFieldNames.append(fieldNames[i])
+		  histScanNumbers.append(1)
+		  histTotalTimes.append(scanDurations[i])
+	   else:
+		  index = histFieldNames.index(fieldNames[i])
+		  histScanNumbers[index] += 1
+		  histTotalTimes[index] += scanDurations[i]
+    
+    # NumPy-ify the vertical bar plot data.
+    histScanNumbers = np.array(histScanNumbers)
+    histTotalTimes = np.array(histTotalTimes)
+    
+    # Print the bar plot statistics.
+    '''
+    print (histFieldNames)
+    print (histScanNumbers)
+    print (histTotalTimes)
+    print ("average duration of scan (s):", np.divide(np.array(histTotalTimes), np.array(histScanNumbers)))
+    '''
+    
+    # Set visual parameters for the bar plots.
+    barWidth = 0.9
+    barAlpha = 0.5
+    fieldNamesRotation = 30 # in degrees
+    
+    # Draw histogram bar plot with the total number of scans.
+    pyplot.figure(figsize = (10, 7))
+    pyplot.bar(np.arange(numberOfFields), histScanNumbers, barWidth, alpha = barAlpha)
+    pyplot.ylim(0, np.amax(histScanNumbers) + 1)
+    pyplot.xticks(np.arange(numberOfFields) + barWidth / 2, histFieldNames)
+    labels = pyplot.gca().get_xticklabels()
+    pyplot.setp(labels, rotation = fieldNamesRotation)
+    pyplot.ylabel("number of scans (1)")
+    pyplot.title("distribution of scans over fields\ndata set: " + mset.ms_name + " | telescope: " + mset.telescope + " | total scan number: " + str(numberOfScans))
+    pyplot.gca().yaxis.grid(True)
+    pyplot.subplots_adjust(left = .08, right = .98)
+    pyplot.savefig(mset.dir_plot + "/distributionScans.png")
+    print ("Saved scan distribution plot to: " + mset.dir_plot + "/distributionScans.png")
+    pyplot.close()
+    
+    # Draw bar plot showing the total amount of time each target was observed.
+    pyplot.figure(figsize = (10, 7))
+    pyplot.bar(np.arange(numberOfFields), histTotalTimes / 60, barWidth, alpha = barAlpha)
+    pyplot.ylim(0, np.amax(histTotalTimes / 60) + 1)
+    pyplot.xticks(np.arange(numberOfFields) + barWidth / 2, histFieldNames)
+    labels = pyplot.gca().get_xticklabels()
+    pyplot.setp(labels, rotation = fieldNamesRotation)
+    pyplot.ylabel("cumulative observing time (min)")
+    pyplot.title("distribution of observing time over fields\ndata set: " + mset.ms_name +
+                 " | telescope: " + mset.telescope + " | total observing time (min): " + str(int(np.round(np.sum(histTotalTimes) / 60))))
+    pyplot.gca().yaxis.grid(True)
+    pyplot.subplots_adjust(left = .08, right = .98)
+    pyplot.savefig(mset.dir_plot + "/distributionTime.png")
+    print ("Saved time distribution plot to: " + mset.dir_plot + "/distributionTime.png")
+    pyplot.close()
+	
+    
+    # Extract antenna names and positions from the 'ANTENNA' table of the MS.
+    # Also antennas that might not be functioning during the observing run are included.
+    tb = casac.casac.table()
+    tb.open(mset.file_path + "/ANTENNA", nomodify = True)
+    antennaXs, antennaYs, antennaZs = tb.getcol("POSITION") / 1000 # Conversion to kilometers
+    antennaNames = tb.getcol("NAME")
+    tb.close()
+    
+    # Calculate the number of antennas in the array (including those out-of-service).
+    antennaNumber = len(antennaNames)
+    
+    antennasUnusedIDs = np.delete(np.arange(antennaNumber), antennasUsedIDs)
+    antennasUnusedNumber = len(antennasUnusedIDs)
+    
+    '''
+    print(antennaNames)
+    print (antennasUsedIDs)
+    print (antennaNames[antennasUsedIDs])
+    print (antennasUnusedIDs)
+    '''
+    
+    # Based http://www.aoc.nrao.edu/~sbhatnag/Thesis/html/node8.html (Figure 2.1)
+    # and Thompson-Moran-Swenson's Interferometry and Synthesis in Radio Astronomy (Figure 4.2),
+    # we conclude that only 'antennaYs' and 'antennaZs' are needed for an antenna map.
+    # Calculate the array center, and make the antenna coordinates relative to it.
+    centerY = np.mean(antennaYs)
+    centerZ = np.mean(antennaZs)
+    antennaYs -= centerY
+    antennaZs -= centerZ
+    
+    # Plot and save the antenna configuration, both labeled and unlabeled.
+    pyplot.figure(figsize = (10, 10))
+    scatterAntennasUsed = pyplot.scatter(antennaYs[antennasUsedIDs], antennaZs[antennasUsedIDs], label = "active antennas (" + str(antennasUsedNumber) + ')', color = "blue")
+    scatterAntennasUnused = pyplot.scatter(antennaYs[antennasUnusedIDs], antennaZs[antennasUnusedIDs], label = "inactive antennas (" + str(antennasUnusedNumber) + ')', color = "red")
+    pyplot.grid()
+    pyplot.xlabel("West - East distance from array center (km)")
+    pyplot.ylabel("South - North distance from array center (km)")
+    pyplot.title("antenna configuration map\ndata set: " + mset.ms_name + " | telescope: " + mset.telescope + " | antenna number: " + str(antennaNumber))
+    pyplot.subplots_adjust(left = .08, right = .98, top = .93, bottom = .07)
+    pyplot.axes().set_aspect('equal', 'datalim')
+    pyplot.legend()
+    pyplot.savefig(mset.dir_plot + "/antennaConfiguration.png")
+    print ("Saved antenna configuration image (unlabeled) to: " + mset.dir_plot + "/antennaConfiguration.png")    
+    
+    for i in range(antennaNumber):
+        pyplot.annotate(antennaNames[i], xy = (antennaYs[i], antennaZs[i]), xytext=(0, 4), size = "small", alpha = 1, textcoords = "offset points", ha = "center", va = "bottom")
+        pyplot.annotate(str(i), xy = (antennaYs[i], antennaZs[i]), xytext=(0, -5), size = "x-small", color = "dimgray", alpha = 1, textcoords = "offset points", ha = "center", va = "top")
+    scatterAntennasUsed.set_label("active antennas (" + str(antennasUsedNumber) + ") with names (above) and IDs (below)")
+    scatterAntennasUnused.set_label("inactive antennas (" + str(antennasUnusedNumber) + ") with names (above) and IDs (below)")
+    pyplot.legend()
+    pyplot.savefig(mset.dir_plot + "/antennaConfigurationLabeled.png")
+    print ("Saved antenna configuration image (labeled) to: " + mset.dir_plot + "/antennaConfigurationLabeled.png")
+    pyplot.close()
+    
+    
+    # Plot elevation versus time.
+    plotms(vis = mset.file_path, xaxis = "time", yaxis = "elevation", showgui = False, selectdata = True, antenna = str(antennasUsedIDs[0]) + '&' + str(antennasUsedIDs[1]),
+           coloraxis = "field", plotfile = mset.dir_plot + "/elevationVsTime.png", overwrite = True)
+    print ("Saved elevation vs. time image to: " + mset.dir_plot + "/elevationVsTime.png")
+
+
 
 def preflag(mset):
-    """
-    First flagging: quack, zeros, RFI 
-    """
+    '''
+    This pipeline step performs some initial flagging. The executed procedures are, in chronological succession:
+    1. Quack flagging (removing the first 'quackinterval' seconds of data at the temporal start of each scan, as it takes some time before antennas operate normally)
+    2. Clip flagging (removing 'NaN's, 'inf's, '-inf's and exact zeros from the data, which are evidently of non-astronomical origin)
+    3. TFCrop flagging (removing RFI)
+    
+    After quack and clip flagging, a flag version file is created. This is a copy of the MS flag column,
+    and can be loaded back into the MS to overwrite the flag column if so desired.
+    These flag version files can be found in a folder located in the same place where the MS is stored.
+    E.g.: if your MS is called 'DDTB247-GWB_FULLPOL.MS', look for flag version files in 'DDTB247-GWB_FULLPOL.MS.flagversions'.
+    
+    After TFCrop flagging, another flag version file is created.
+    
+    Flag version files are not overwritten if this pipeline step is ran multiple times.
+    Instead, old flag version files are renamed, and changes are recorded in the text file 'FLAG_VERSION_LIST' in the (e.g.) 'DDTB247-GWB_FULLPOL.MS.flagversions' folder.
+    '''
     logging.info("### FIRST FLAGGING")
     
-    # quack: flag the quackinterval (in seconds) at the beginning of each scan
-    flagdata(vis=mset.file_path, mode='quack', quackinterval=1,
-             quackmode='beg', action='apply', flagbackup=False)
+    # Quack flag the data. Do not automatically back up the flags - we'll create a combined quack - clip flag version file manually.
+    flagdata(vis = mset.file_path, mode = "quack", quackinterval = 1, quackmode = "beg", quackincrement = False, action = "apply", flagbackup = False)
     
-    # flag zeros
-    flagdata(vis=mset.file_path, mode='clip', clipzeros=True,
-             correlation='ABS_ALL', action='apply', flagbackup=False)
+    # Clip flag the data.
+    flagdata(vis = mset.file_path, mode = "clip", clipzeros = True, correlation = "ABS_ALL", action = "apply", flagbackup = False)
     
-    # save flag status
-    flagmanager(vis=mset.file_path, mode='save',
-                versionname='AfterStaticFlagging', 
-                comment=str(datetime.datetime.now()))
+    # Save all flags to a separate file.
+    flagmanager(vis = mset.file_path, mode = "save", versionname = "AfterStaticFlagging", comment = str(datetime.datetime.now()))
+    
+    
+    # TFCrop flag the data.
+    flagdata(vis = mset.file_path, mode = "tfcrop", datacolumn = "data", timecutoff = 4.0, freqcutoff = 3.0, maxnpieces = 7, action = "apply", flagbackup = False)
 
-    # First RFI removal
-    flagdata(vis=mset.file_path, mode='tfcrop', datacolumn='data',
-             timecutoff = 4., freqcutoff = 3., maxnpieces = 7,
-             action='apply', flagbackup=False)
+    # Save all flags to a separate file.
+    flagmanager(vis = mset.file_path, mode = "save", versionname = "AfterDynamicFlagging", comment = str(datetime.datetime.now())) 
 
-    # save flag status
-    flagmanager(vis=mset.file_path, mode='save',
-                versionname='AfterDynamicFlagging',
-                comment=str(datetime.datetime.now())) 
+
 
 def set_flux_density_scale(mset):
     """
@@ -130,79 +368,92 @@ def set_flux_density_scale(mset):
           standard='Scaife-Heald 2012', usescratch=True,
           scalebychan=True)
 
+
+
 def bandpass_calibration(mset):
     """
     This method compensates for the change of gain with frequency using a
     calibrator source.
     """
-
-    if not os.path.isdir(mset.dir_cal+mset.fluxcalibrator.extend_dir):
-        os.makedirs(mset.dir_cal+mset.fluxcalibrator.extend_dir)
-    if not os.path.isdir(mset.dir_plot+mset.fluxcalibrator.extend_dir):
-        os.makedirs(mset.dir_plot+mset.fluxcalibrator.extend_dir)
+    
+    print (mset.dir_cal)
+    print (mset.dir_plot)
+    print (mset.fluxcalibrator.extend_dir)
+    
+    # Create the calibration and plot directories for the chosen flux calibrator, if they do not yet exist.
+    if not os.path.isdir(mset.dir_cal + mset.fluxcalibrator.extend_dir):
+        os.makedirs(mset.dir_cal + mset.fluxcalibrator.extend_dir)
+    if not os.path.isdir(mset.dir_plot + mset.fluxcalibrator.extend_dir):
+        os.makedirs(mset.dir_plot + mset.fluxcalibrator.extend_dir)
 
 
     # TEMP
     # make a test img
-    #if not os.path.isdir(mset.dir_img+mset.fluxcalibrator.extend_dir):
-        #os.makedirs(mset.dir_img+mset.fluxcalibrator.extend_dir)
-    #parms = {'vis':mset.file_path, 'field':mset.fluxcalibrator.field_name,
-             #'imagename':mset.dir_img+mset.fluxcalibrator.extend_dir+'/'+ \
-             #mset.fluxcalibrator.field_name+'_before_calibration',
-             #'gridmode':'widefield', 'wprojplanes':128,
-             #'mode':'mfs', 'nterms':2, 'niter':10000, 'gain':0.1,
-             #'psfmode':'clark', 'imagermode':'csclean', 'imsize':1200,
-             #'cell':sou_res, 'weighting':'briggs', 'robust':0,
-             #'usescratch':False}
-    #utils.cleanmaskclean(parms, makemask=False)
+    '''
+    if not os.path.isdir(mset.dir_img+mset.fluxcalibrator.extend_dir):
+        os.makedirs(mset.dir_img+mset.fluxcalibrator.extend_dir)
+    parms = {'vis':mset.file_path, 'field':mset.fluxcalibrator.field_name,
+             'imagename':mset.dir_img+mset.fluxcalibrator.extend_dir+'/'+ \
+             mset.fluxcalibrator.field_name+'_before_calibration',
+             'gridmode':'widefield', 'wprojplanes':128,
+             'mode':'mfs', 'nterms':2, 'niter':10000, 'gain':0.1,
+             'psfmode':'clark', 'imagermode':'csclean', 'imsize':1200,
+             'cell':sou_res, 'weighting':'briggs', 'robust':0,
+             'usescratch':False}
+    utils.cleanmaskclean(parms, makemask=False)
     
-    #parms = {'vis':mset.file_path, 'field':mset.targetsources[0].field_name,
-             #'imagename':mset.dir_img+mset.fluxcalibrator.extend_dir+'/'+ \
-             #mset.targetsources[0].field_name+'_before_calibration',
-             #'gridmode':'widefield', 'wprojplanes':128,
-             #'mode':'mfs', 'nterms':2, 'niter':10000, 'gain':0.1,
-             #'psfmode':'clark', 'imagermode':'csclean', 'imsize':5000,
-             #'cell':sou_res, 'weighting':'briggs', 'robust':0,
-             #'usescratch':False}
-    #utils.cleanmaskclean(parms, makemask=False)
+    parms = {'vis':mset.file_path, 'field':mset.targetsources[0].field_name,
+             'imagename':mset.dir_img+mset.fluxcalibrator.extend_dir+'/'+ \
+             mset.targetsources[0].field_name+'_before_calibration',
+             'gridmode':'widefield', 'wprojplanes':128,
+             'mode':'mfs', 'nterms':2, 'niter':10000, 'gain':0.1,
+             'psfmode':'clark', 'imagermode':'csclean', 'imsize':5000,
+             'cell':sou_res, 'weighting':'briggs', 'robust':0,
+             'usescratch':False}
+    utils.cleanmaskclean(parms, makemask=False)
+    '''    
     # TEMP
-
-
-
-    # In order for plotcal to work a symbolic link is needed.
-    # Plotcal assumes the measurement set is in the same directory
-    # as the cal table.
-    syscommand = 'ln -s '+mset.file_path+' '+\
-                 mset.dir_cal+mset.fluxcalibrator.extend_dir+'/'+mset.ms_name+\
+    
+    
+    # In order for 'plotcal' to work a symbolic link is needed:
+    # 'plotcal' assumes the measurement set is in the same directory as the cal table.
+    # '-s' stands for 'symbolic'. 'ln' syntax: first target, then path of link
+    systemCommand = 'ln -s ' + mset.file_path + ' ' + \
+                 mset.dir_cal + mset.fluxcalibrator.extend_dir + '/' + mset.ms_name + \
                  '.ms'
-    os.system(syscommand)
-
-    # Select a spectral window: 0:10~20 mean window 0, channels 10 to 20
-    if mset.nchan == 2048: initspw = '0:1010~1030'
-    elif mset.nchan == 512: initspw = '0:240~260'
-    elif mset.nchan == 256: initspw = '0:120~130'
-    elif mset.nchan == 128: initspw = '0:70~80'
-    elif mset.nchan == 64: initspw = '0:30~50'
-
-    for step in ['cycle1','final']:
-        # Do two bandpass calibration steps per calibrator.
-        logging.info("Start bandpass step: "+step)
-
-        gaintables=[]
-        interp=[]
-
-        refAntObj = AntennaObjects.RefAntHeuristics(vis=mset.file_path, 
-                                   field=mset.fluxcalibrator.field_name, geometry=True, 
-                                   flagging=True)
+    os.system(systemCommand)
+    
+    
+    # Sets the spectral window used for initial phase calibration ('phaseCalInit').
+    # Syntax example: "0:10~20" means window 0, channels 10 to 20 (including 20!).
+    # The first channel is assumed to be referred to as channel 0.
+    phaseCalInitBandwidth = 2e6 # 2 MHz
+    phaseCalInitChannelNumber = np.ceil(phaseCalInitBandwidth / mset.channelWidth)
+    # In case 'mset.nchan' is even and 'phaseCalInitChannelNumber' is odd or vice versa,
+    # the number of channels in the initial phase calibration bandwidth is phaseCalInitChannelNumber + 1.
+    # This ensures that the channels taken are precisely in the center of the first window.
+    phaseCalInitSpW = "0:" + str(int(np.ceil((mset.nchan - 1) / 2.0 - phaseCalInitChannelNumber / 2.0))) + '~' + str(int(np.floor((mset.nchan - 1) / 2.0 + phaseCalInitChannelNumber / 2.0)))
+    
+    
+    for step in ["cycle1", "final"]: # Do two bandpass calibration steps per calibrator.
+        logging.info("Start bandpass step: " + step)
+        
+        gaintables = []
+        interp = []
+        
+        # Determine a reference antenna.
+        refAntObj = AntennaObjects.RefAntHeuristics(vis = mset.file_path, field = mset.fluxcalibrator.field_name,
+                                                    telescope = mset.telescope, geometry = True, flagging = True)
         refAnt = refAntObj.calculate()[0]
         
-        # Select minimal signal to noise ratio
-        if mset.freq < 500e6:
-            minsnr=3.0
+        # Select minimal signal-to-noise ratio depending on the reference frequency.
+        if (mset.freq < 500e6): # If the reference frequency is lower than 500 MHz
+            minsnr = 3.0
         else:
-            minsnr=5.0
+            minsnr = 5.0
         
-        caltablepath = mset.dir_cal+mset.fluxcalibrator.extend_dir+'/'
+        caltablepath = mset.dir_cal + mset.fluxcalibrator.extend_dir + '/'
+        
         
         # Start with phase calibration
         # The 'B' solutions are limited by the signal-to-noise ratio 
@@ -213,68 +464,88 @@ def bandpass_calibration(mset):
         # 'G' is polarization dependent gain, 'T' is polarization
         # independent gain. So boot stands for startup.
         logging.info("Phase calibration")
-        gaincal(vis=mset.file_path, caltable=caltablepath+step+'-boot.Gp', 
+        print (mset.fluxcalibrator.field_id)
+        print (mset.fluxcalibrator.field_name)
+        print (mset.fluxcalibrator.scans)
+        
+        gaincal(vis = mset.file_path, caltable = caltablepath + step + '-boot.Gp', 
                 field=mset.fluxcalibrator.field_name, selectdata=True, uvrange='>50m',
-                scan=mset.fluxcalibrator.scans, spw=initspw, solint='int', combine='', 
-                refant=refAnt, minblperant=mset.minBL_for_cal, minsnr=0, 
-                calmode='p')
-        bootGp = TableObjects.STObj(caltablepath+step+'-boot.Gp')
+                scan=mset.fluxcalibrator.scans, spw = phaseCalInitSpW, solint='int', combine='', 
+                refant=refAnt, minblperant=mset.minBL_for_cal, minsnr=0, calmode = 'p')
+        
+        # Add the calibrator source name to the Calibration Table. In this way, the calibrator name can be displayed on plots.
+        tb.open(caltablepath + step + "-boot.Gp", nomodify = False)
+        tb.putkeyword("CalibratorName", mset.fluxcalibrator.field_name)
+        tb.close()
+        
+        bootGp = TableObjects.STObj(caltablepath + step + "-boot.Gp")
         mset.fluxcalibrator.derived_cal_tables.append(bootGp)
         
         # Smoothing solutions
-        smoothcal(vis=mset.file_path, tablein=bootGp.file_path,
-                  caltable=caltablepath+step+'-boot.Gp-smooth')
-        bootGpsmooth = TableObjects.STObj(caltablepath+step+'-boot.Gp-smooth')
+        smoothcal(vis = mset.file_path, tablein = bootGp.file_path, caltable = caltablepath + step + "-boot.Gp-smooth")
+        bootGpsmooth = TableObjects.STObj(caltablepath + step + "-boot.Gp-smooth")
         mset.fluxcalibrator.derived_cal_tables.append(bootGpsmooth)
         
         # Initial bandpass correction.
         # Calibration type 'B' differs from 'G' only in that it is 
         # determined for each channel in each spectral window.
         logging.info("Bandpass calibration 1")
-        bandpass(vis=mset.file_path, caltable=caltablepath+step+'-boot.B', 
+        bandpass(vis=mset.file_path, caltable = caltablepath + step + "-boot.B", 
                  field=mset.fluxcalibrator.field_name, selectdata=True, uvrange='>100m', 
                  scan=mset.fluxcalibrator.scans, solint='inf', combine='scan,field', 
                  refant=refAnt, minblperant=mset.minBL_for_cal, 
-                 minsnr=minsnr, solnorm=True, bandtype='B', 
-                 gaintable=[bootGpsmooth.file_path], 
-                 interp=['linear'])
+                 minsnr=minsnr, solnorm=True, bandtype='B', gaintable=[bootGpsmooth.file_path], interp=['linear'])
+        
+        # Add the calibrator source name to the Calibration Table. In this way, the calibrator name can be displayed on plots.
+        tb.open(caltablepath + step + "-boot.B", nomodify = False)
+        tb.putkeyword("CalibratorName", mset.fluxcalibrator.field_name)
+        tb.close()
+        
         bootB = TableObjects.STObj(caltablepath+step+'-boot.B')
         mset.fluxcalibrator.derived_cal_tables.append(bootB)
-
+        
         # Find leftover time-dependent delays, Type 'K' solves for simple
         # antenna-based delays via Fourier transforms of the spectra on
         # baselines to the reference antenna. 
         logging.info("BP: Delay calibration")
-        gaincal(vis=mset.file_path, caltable=caltablepath+step+'.K', 
+        gaincal(vis=mset.file_path, caltable = caltablepath + step + ".K", 
                 field=mset.fluxcalibrator.field_name, selectdata=True, uvrange='>100m',
                 scan=mset.fluxcalibrator.scans, solint='int',combine='', refant=refAnt, 
                 interp=interp+['nearest,nearestflag'], gaintype='K',
-                minblperant=mset.minBL_for_cal, minsnr=minsnr,
-                gaintable=gaintables+[bootB.file_path])
-        K = TableObjects.STObj(caltablepath+step+'.K')
+                minblperant=mset.minBL_for_cal, minsnr=minsnr, gaintable = gaintables + [bootB.file_path])
+        
+        # Add the calibrator source name to the Calibration Table. In this way, the calibrator name can be displayed on plots.
+        tb.open(caltablepath + step + ".K", nomodify = False)
+        tb.putkeyword("CalibratorName", mset.fluxcalibrator.field_name)
+        tb.close()
+        
+        K = TableObjects.STObj(caltablepath + step + ".K")
         mset.fluxcalibrator.derived_cal_tables.append(K)
         
         # flag outliers
         utils.FlagCal(K.file_path, sigma = 5, cycles = 3)
         
         # plot
-        K.plot(mset.dir_plot+mset.fluxcalibrator.extend_dir)
+        K.plot(mset.dir_plot + mset.fluxcalibrator.extend_dir)
         
         gaintables.append(K.file_path)
         interp.append('linear')
         
-        # Find time-dependant gains, now taking both amplitude and phase
-        # into account.
+        # Find time-dependent gains, now taking both amplitude and phase into account.
         logging.info("BP: Gain calibration")
         gaincal(vis=mset.file_path, caltable=caltablepath+step+'.Gap', 
                 field=mset.fluxcalibrator.field_name, selectdata=True, uvrange='>100m', 
                 scan=mset.fluxcalibrator.scans, solint='int',combine='', refant=refAnt, 
-                interp=interp+['nearest,nearestflag'],
-                minblperant=mset.minBL_for_cal, minsnr=minsnr,  
-                gaintype='G', calmode='ap',
-                gaintable=gaintables+[bootB.file_path])
-        Gap = TableObjects.STObj(caltablepath+step+'.Gap')
-        mset.fluxcalibrator.derived_cal_tables.append(K)
+                interp=interp+['nearest,nearestflag'], minblperant=mset.minBL_for_cal, minsnr=minsnr,  
+                gaintype='G', calmode='ap', gaintable=gaintables+[bootB.file_path])
+        
+        # Add the calibrator source name to the Calibration Table. In this way, the calibrator name can be displayed on plots.
+        tb.open(caltablepath + step + ".Gap", nomodify = False)
+        tb.putkeyword("CalibratorName", mset.fluxcalibrator.field_name)
+        tb.close() 
+        
+        Gap = TableObjects.STObj(caltablepath + step + ".Gap")
+        mset.fluxcalibrator.derived_cal_tables.append(Gap)
         
         # flag outliers
         utils.FlagCal(Gap.file_path, sigma = 3, cycles = 3)
@@ -288,24 +559,27 @@ def bandpass_calibration(mset):
         # Find cross-K, type 'KCROSS' solves for global cross-hand delays,
         # so this is again to find delays.
         logging.info("BP: Kcross calibration")
-        gaincal(vis=mset.file_path, caltable=caltablepath+step+'.Kcross',
+        gaincal(vis=mset.file_path, caltable = caltablepath + step + ".Kcross",
                 field=mset.fluxcalibrator.field_name, selectdata=True, uvrange='>100m',
                 scan=mset.fluxcalibrator.scans, solint='inf',combine='scan,field', 
                 refant=refAnt, interp=interp+['nearest,nearestflag'],
-                minblperant=mset.minBL_for_cal, minsnr=minsnr,
-                gaintype='KCROSS',
-                gaintable=gaintables+[bootB.file_path])
-        Kcross = TableObjects.STObj(caltablepath+step+'.Kcross')
+                minblperant=mset.minBL_for_cal, minsnr=minsnr, gaintype='KCROSS', gaintable=gaintables+[bootB.file_path])
+        
+        # Add the calibrator source name to the Calibration Table. In this way, the calibrator name can be displayed on plots.
+        tb.open(caltablepath + step + ".Kcross", nomodify = False)
+        tb.putkeyword("CalibratorName", mset.fluxcalibrator.field_name)
+        tb.close()
+        
+        Kcross = TableObjects.STObj(caltablepath + step + ".Kcross")
         mset.fluxcalibrator.derived_cal_tables.append(Kcross)
                 
         # plot (custom plot, not in STObj class)
-        plotcal(caltable = Kcross.file_path, xaxis = 'antenna', 
-                yaxis = 'delay', showgui=False,
-                figfile= mset.dir_plot+mset.fluxcalibrator.extend_dir+'/'+ \
-                step+'.Kcross.png' )
+        plotcal(caltable = Kcross.file_path, xaxis = 'antenna', yaxis = 'delay', showgui = False,
+                figfile = mset.dir_plot + mset.fluxcalibrator.extend_dir + '/' + step + ".Kcross.png")
         
         gaintables.append(caltablepath+step+'.Kcross')
         interp.append('nearest')
+
 
         # Recalculate bandpass taking delays into account.
         logging.info("Bandpass calibration 2")
@@ -315,15 +589,23 @@ def bandpass_calibration(mset):
                  refant=refAnt, interp=interp, 
                  minblperant=mset.minBL_for_cal, minsnr=minsnr, 
                  solnorm=True, bandtype='B', gaintable=gaintables)
-        B = TableObjects.STObj(caltablepath+step+'.B')
+        
+        # Add the calibrator source name to the Calibration Table. In this way, the calibrator name can be displayed on plots.
+        tb.open(caltablepath + step + ".B", nomodify = False)
+        tb.putkeyword("CalibratorName", mset.fluxcalibrator.field_name)
+        tb.close()
+        
+        # Create a Solution Table Object for easy access to the bandpass data.
+        B = TableObjects.STObj(caltablepath + step + ".B")
         mset.fluxcalibrator.derived_cal_tables.append(B)
-                 
-        # plot
-        B.plot(mset.dir_plot+mset.fluxcalibrator.extend_dir)
-                        
+        
+        # Plot the bandpass data.
+        B.plot(mset.dir_plot + mset.fluxcalibrator.extend_dir)
+        
         gaintables.append(B.file_path)
         interp.append('nearest,nearestflag')
-
+        
+        
         # Apply the gaintables from this bandpass calibration cycle.
         logging.info("Apply bandpass")
         applycal(vis=mset.file_path, selectdata=True, field=mset.fluxcalibrator.field_name,
@@ -334,7 +616,7 @@ def bandpass_calibration(mset):
             # clip on residuals
             utils.clipresidual(mset.file_path, f=mset.fluxcalibrator.field_name, s=mset.fluxcalibrator.scans)
 
-
+    print (mset.fluxcalibrator.derived_cal_tables)
     # remove K, amp from gaintables, we keep B and Kcross which are global 
     # and T-indep
     gaintables=[caltablepath+'final.B', caltablepath+'final.Kcross']
@@ -358,6 +640,8 @@ def bandpass_calibration(mset):
 
     # flag statistics after flagging
     utils.statsFlag(mset.file_path, note='After rflag')
+
+
 
 def calib(mset):
     """
@@ -392,9 +676,8 @@ def calib(mset):
         # (another) phase calibration and amplitude calibration.
         logging.info("Start CALIB cycle: "+str(cycle))
 
-        refAntObj = AntennaObjects.RefAntHeuristics(vis=mset.file_path, 
-                                   field=mset.phasecalibrator.field_name, geometry=True, 
-                                   flagging=True)
+        refAntObj = AntennaObjects.RefAntHeuristics(vis = mset.file_path, field = mset.phasecalibrator.field_name,
+                                                    telescope = mset.telescope, geometry = True, flagging = True)
         refAnt = refAntObj.calculate()[0]
         
         # Reset these for this cycle
@@ -520,6 +803,8 @@ def calib(mset):
     # ENDTEMP
     # ENDTEMP
 
+
+
 def selfcal(mset):
     """
     This method compensates for the change of gain with time using the data
@@ -539,22 +824,22 @@ def selfcal(mset):
     width = int(width / (512/mset.nchan))
     logging.info("Average with width="+str(width))
     
-    # Perform self calibration on each target field individually
+    # Perform self calibration on each target field individually.
     for target in mset.targetsources:
     
         # Create the directories
-        if not os.path.isdir(mset.dir_cal+target.extend_dir):
-            os.makedirs(mset.dir_cal+target.extend_dir)
-        if not os.path.isdir(mset.dir_plot+target.extend_dir):
-            os.makedirs(mset.dir_plot+target.extend_dir)
-        if not os.path.isdir(mset.dir_img+target.extend_dir):
-            os.makedirs(mset.dir_img+target.extend_dir)
+        if not os.path.isdir(mset.dir_cal + target.extend_dir):
+            os.makedirs(mset.dir_cal + target.extend_dir)
+        if not os.path.isdir(mset.dir_plot + target.extend_dir):
+            os.makedirs(mset.dir_plot + target.extend_dir)
+        if not os.path.isdir(mset.dir_img + target.extend_dir):
+            os.makedirs(mset.dir_img + target.extend_dir)
     
         # Split the target field from the old measurement set
-        target_file_path = mset.file_path[:-3]+'_target_'+target.field_name+'.ms'
-        split(vis=mset.file_path, outputvis=target_file_path, scan=target.scans,
-              field=target.field_name, width=width, datacolumn='corrected',
-              keepflags=False)
+        target_file_path = mset.file_path[ : -3] + "_target_" + target.field_name + ".ms"
+        split(vis = mset.file_path, outputvis = target_file_path, scan = target.scans,
+              field = target.field_name, width = width, datacolumn = "corrected",
+              keepflags = False)
         
         # Create newinstance of MSObj for this target and tell the original 
         # mset that this target has been split off
@@ -741,8 +1026,8 @@ def selfcal(mset):
             
             ## Perform the actual self calbration
             # recalibrating
-            refAntObj = AntennaObjects.RefAntHeuristics(vis=target_file_path,
-                                       field='0', geometry=True, flagging=True)
+            refAntObj = AntennaObjects.RefAntHeuristics(vis = target_file_path, field = '0',
+                                                        telescope = mset.telescope, geometry = True, flagging = True)
             refAnt = refAntObj.calculate()[0][0]
 
             # Gaincal - phases
@@ -826,6 +1111,8 @@ def selfcal(mset):
         plt.xlabel('Self Calibration Cycle')
         plt.ylabel(r'RMS / RMS$_0$')
         plt.savefig(mset.dir_plot+'/selfcal_rms.png')
+
+
 
 def peeling(mset):
 
@@ -1006,7 +1293,7 @@ def peeling(mset):
         
             residualMS = peel.peel(residualMS, target_mset, prepeelingmodels, mset.dir_peel+extend_dir+'/region'+str(i+1), solint_data, rms)
 
-        
+
 
 def createimage(mset):
     logging.info("### CREATE FINAL IMAGE")
@@ -1021,8 +1308,8 @@ def createimage(mset):
                  'imsize':sou_size, 'cell':sou_res, 'weighting':'briggs', 'robust':rob, 'usescratch':True,
                  'uvtaper':True, 'threshold':str(expnoise)+' Jy'}
         utils.cleanmaskclean(parms, makemask=False)
-    
+        
         # Create fits file
-        exportfits(imagename=target_mset.file_path[:-3]+'_final.image.tt0',
-                   fitsimage=target_mset.file_path[:-3]+'_final.fits',
-                   history=False, overwrite=True)
+        exportfits(imagename = target_mset.file_path[ : -3] + "_final.image.tt0",
+                   fitsimage = target_mset.file_path[ : -3] + "_final.fits",
+                   history = False, overwrite = True)

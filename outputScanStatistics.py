@@ -1,6 +1,8 @@
 '''
-Martijn Oei, 2016
+Martijn Oei, 2017
 This program loads a (uGMRT logging) text file with information about the observed scans.
+It is assumed this file is created beforehand, manually, by taking the uGMRT-provided log file
+and removing everything other than the table with scan information.
 It produces plots and scan statistics.
 '''
 
@@ -9,8 +11,7 @@ from matplotlib import pyplot
 import datetime
 
 # Set the path and filename to search for.
-# In this case, data of the November 26, 2016 observations is loaded. It is assumed that 'ddtb247ScansOnly.log' is created beforehand, manually.
-# 'ddtb247ScansOnly.log' is a file I made from the GMRT-provided log file by removing everything other than the table with scan information.
+# In this case, data of the November 26, 2016 observations is loaded - 'ddtb247ScansOnly.log'.
 logFilePath = "/data1/MartijnOei/martijn_400mugs_pilot/"
 logFileName = "ddtb247ScansOnly.log"
 
@@ -25,7 +26,8 @@ targetNamesRotation = 30 # in degrees
 
 
 # Load the information.
-scanIDs, targetNames, timeStartStrings, timeEndStrings = numpy.loadtxt(logFilePath + logFileName, dtype = {"names": ("scan ID", "target name", "time start", "time end"), "formats": ("i2", "a7", "a8", "a8")}, usecols = (1,2,3,5), unpack = True)
+scanIDs, targetNames, timeStartStrings, timeEndStrings = numpy.loadtxt(logFilePath + logFileName, dtype = { "names": ("scan ID", "target name", "time start", "time end"),
+                                                                                                            "formats": ("i2", "a7", "a8", "a8")}, usecols = (1,2,3,5), unpack = True)
 scanNumber = len(scanIDs)
 targetNumber = len(set(targetNames))
 

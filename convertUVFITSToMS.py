@@ -1,12 +1,13 @@
 '''
-Martijn Oei, 2016
 This program converts (uGMRT) UVFITS data into a CASA MS, using CASANOVA.
+Written by Martijn Oei (2017).
 '''
 
+# Load the 'importgmrt' function of CASANOVA.
 from casat import importgmrt
 importgmrt = importgmrt.importgmrt
 
-# Set the paths where the UVFITS data can be found, and where the MS data should be stored.
+# Set the paths where the UVFITS data can be found, and where the MS data should be stored. These paths need not be the same.
 dataPathUVFITS = "/data1/MartijnOei/martijn_400mugs_pilot/DDTB247-GWB_FULLPOL/"
 dataPathMS = "/data1/MartijnOei/martijn_400mugs_pilot/DDTB247-GWB_FULLPOL/"
 
