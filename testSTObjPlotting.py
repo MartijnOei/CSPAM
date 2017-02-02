@@ -7,8 +7,8 @@ Use this convenience utility for tests, as it circumvents running the CSPAM pipe
 
 from lib import TableObjects
 
-# Initialize the directory where plots should be stored.
-plotDirectory = "/data1/MartijnOei/martijn_400mugs_pilot/DDTB247-GWB_FULLPOL/DDTB247-GWB_FULLPOL-plot/flux_cal_3C286/testSTObjPlotBandpass/"
+# Initialize the directory where plots should be stored. This directory could be different from the one where the CSPAM pipeline stores plots.
+plotDirectory = "/data1/MartijnOei/martijn_400mugs_pilot/DDTB247-GWB_FULLPOL/DDTB247-GWB_FULLPOL-plot/flux_cal_3C286/"
 
 # Initialize the location of the CT that should be used.
 calibrationTablePath = "/data1/MartijnOei/martijn_400mugs_pilot/DDTB247-GWB_FULLPOL/DDTB247-GWB_FULLPOL-cal/flux_cal_3C286/"
